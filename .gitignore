@@ -1,0 +1,9 @@
+models/
+output/
+__pycache__/
+*.pyc
+input/portraits/*.jpg
+input/portraits/*.png
+input/emojis/*.gif
+input/emojis/*.png
+input/emojis/*.jpg
