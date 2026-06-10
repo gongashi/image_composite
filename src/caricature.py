@@ -39,7 +39,7 @@ def warp_image_local(image, src_points, dst_points):
     return result
 
 
-def crop_face_from_image(image, landmarks, padding_ratio=0.4):
+def crop_face_from_image(image, landmarks, padding_ratio=0.25):
     outline_indices = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323,
                        361, 288, 397, 365, 379, 378, 400, 377, 152, 148,
                        176, 149, 150, 136, 172, 58, 132, 177, 215, 137,
@@ -59,7 +59,19 @@ def crop_face_from_image(image, landmarks, padding_ratio=0.4):
     cropped = image[y1:y2, x1:x2].copy()
     offset = (x1, y1)
     new_landmarks = [(lx - x1, ly - y1) for (lx, ly) in landmarks]
-    return cropped, new_landmarks, offset
+
+    mask = np.zeros(cropped.shape[:2], dtype=np.uint8)
+    new_face_pts = [new_landmarks[i] for i in outline_indices]
+    new_hull = cv2.convexHull(np.array(new_face_pts, dtype=np.int32))
+    cv2.fillConvexPoly(mask, new_hull, 255)
+    mask = cv2.GaussianBlur(mask, (21, 21), 0)
+    mask_3d = mask[:, :, np.newaxis]
+
+    bg_color = np.array([240, 240, 240], dtype=np.uint8)
+    isolated = (cropped.astype(np.float32) * (mask_3d / 255.0) +
+                bg_color.astype(np.float32) * (1.0 - mask_3d / 255.0)).astype(np.uint8)
+
+    return isolated, new_landmarks, offset
 
 
 def exaggerate_features(image, features, ratios, exaggeration_factor=1.8):
