@@ -3,24 +3,23 @@ import numpy as np
 from scipy.interpolate import RBFInterpolator
 
 
-def warp_image_local(image, src_points, dst_points, radius=50):
+def warp_image_local(image, src_points, dst_points):
     h, w = image.shape[:2]
-    result = image.copy()
-
     src_arr = np.array(src_points, dtype=np.float64)
     dst_arr = np.array(dst_points, dtype=np.float64)
+    displacements = dst_arr - src_arr
 
     grid_y, grid_x = np.mgrid[0:h, 0:w]
     grid_points = np.column_stack([grid_x.ravel(), grid_y.ravel()])
-
-    displacements = dst_arr - src_arr
 
     try:
         interpolator = RBFInterpolator(src_arr, displacements, kernel="thin_plate_spline", smoothing=0.1)
         warp_field = interpolator(grid_points)
     except Exception:
-        for i, (sp, dp) in enumerate(zip(src_arr, dst_arr)):
+        result = image.copy()
+        for sp, dp in zip(src_arr, dst_arr):
             dx, dy = dp - sp
+            radius = 40
             for gy in range(max(0, int(sp[1] - radius)), min(h, int(sp[1] + radius))):
                 for gx in range(max(0, int(sp[0] - radius)), min(w, int(sp[0] + radius))):
                     dist = np.sqrt((gx - sp[0]) ** 2 + (gy - sp[1]) ** 2)
@@ -34,12 +33,33 @@ def warp_image_local(image, src_points, dst_points, radius=50):
 
     warp_x = warp_field[:, 0].reshape(h, w)
     warp_y = warp_field[:, 1].reshape(h, w)
-
     map_x = (grid_x + warp_x).astype(np.float32)
     map_y = (grid_y + warp_y).astype(np.float32)
-
     result = cv2.remap(image, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
     return result
+
+
+def crop_face_from_image(image, landmarks, padding_ratio=0.4):
+    outline_indices = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323,
+                       361, 288, 397, 365, 379, 378, 400, 377, 152, 148,
+                       176, 149, 150, 136, 172, 58, 132, 177, 215, 137,
+                       227, 127, 162, 21, 54, 103, 67, 109]
+    face_pts = [landmarks[i] for i in outline_indices]
+    hull = cv2.convexHull(np.array(face_pts, dtype=np.int32))
+    x, y, fw, fh = cv2.boundingRect(hull)
+    h_img, w_img = image.shape[:2]
+
+    pad_w = int(fw * padding_ratio)
+    pad_h = int(fh * padding_ratio)
+    x1 = max(0, x - pad_w)
+    y1 = max(0, y - pad_h)
+    x2 = min(w_img, x + fw + pad_w)
+    y2 = min(h_img, y + fh + pad_h)
+
+    cropped = image[y1:y2, x1:x2].copy()
+    offset = (x1, y1)
+    new_landmarks = [(lx - x1, ly - y1) for (lx, ly) in landmarks]
+    return cropped, new_landmarks, offset
 
 
 def exaggerate_features(image, features, ratios, exaggeration_factor=1.8):
@@ -48,7 +68,6 @@ def exaggerate_features(image, features, ratios, exaggeration_factor=1.8):
     dst_points = []
 
     center = features["center"][0]
-
     face_height = ratios["face_height"]
     face_width = ratios["face_width"]
 
@@ -100,7 +119,7 @@ def exaggerate_features(image, features, ratios, exaggeration_factor=1.8):
     return warped
 
 
-def apply_cartoon_style(image, saturation_boost=1.5, edge_thickness=3):
+def apply_cartoon_style(image, saturation_boost=1.5, edge_thickness=2):
     img = image.copy()
 
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -108,14 +127,13 @@ def apply_cartoon_style(image, saturation_boost=1.5, edge_thickness=3):
     img = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.medianBlur(gray, 5)
+    gray = cv2.medianBlur(gray, 7)
     edges = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
                                   cv2.THRESH_BINARY, blockSize=9, C=2)
     edges = cv2.dilate(edges, np.ones((edge_thickness, edge_thickness), np.uint8))
     edges_inv = cv2.bitwise_not(edges)
 
     img_color = cv2.bilateralFilter(img, d=9, sigmaColor=75, sigmaSpace=75)
-
     result = cv2.bitwise_and(img_color, img_color, mask=edges_inv)
     return result
 
@@ -129,10 +147,12 @@ def create_caricature(image_path, exaggeration_factor=1.8, cartoon_style=True):
         detector.release()
         return None
 
-    features = detector.get_feature_regions(points)
-    ratios = detector.compute_feature_ratios(features, image.shape)
+    cropped, new_points, offset = crop_face_from_image(image, points)
 
-    exaggerated = exaggerate_features(image, features, ratios, exaggeration_factor)
+    features = detector.get_feature_regions(new_points)
+    ratios = detector.compute_feature_ratios(features, cropped.shape)
+
+    exaggerated = exaggerate_features(cropped, features, ratios, exaggeration_factor)
 
     if cartoon_style:
         result = apply_cartoon_style(exaggerated)
@@ -140,4 +160,4 @@ def create_caricature(image_path, exaggeration_factor=1.8, cartoon_style=True):
         result = exaggerated
 
     detector.release()
-    return result, features, ratios
+    return result, new_points, ratios
