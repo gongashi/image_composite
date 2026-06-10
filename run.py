@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.face_landmark import FaceLandmarkDetector
 from src.caricature import create_caricature
 from src.composite import create_composite
-from src.ai_composite import generate_caricature_with_wanx, generate_composite_with_wanx, generate_composite_prompt
+from src.ai_composite import generate_caricature, generate_composite, analyze_features, generate_composite_step1, create_eye_mask, fix_eyes
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -67,25 +67,32 @@ def run_local(portrait_path, target_path, exaggeration=1.8):
 def run_ai(portrait_path, target_path):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    print(f"[1/3] AI分析人像特征 + 生成漫画化人像...")
-    caricature_path, car_prompt = generate_caricature_with_wanx(portrait_path, OUTPUT_DIR)
+    print(f"[1/4] AI分析人像特征 + 生成漫画化人像...")
+    caricature_path, car_prompt = generate_caricature(portrait_path, OUTPUT_DIR)
     if caricature_path is None:
         print("ERROR: AI漫画化生成失败！")
-        print(f"  使用的prompt: {car_prompt}")
+        print(f"  Prompt: {car_prompt}")
         return None, None
     print(f"  Prompt: {car_prompt}")
     print(f"  已保存: {caricature_path}")
 
-    print(f"[2/3] AI分析两张图片 + 生成融合prompt...")
-    comp_prompt = generate_composite_prompt(portrait_path, target_path)
-    print(f"  融合prompt: {comp_prompt}")
-
-    print(f"[3/3] AI生成融合合成图片...")
-    composite_path, comp_prompt_used = generate_composite_with_wanx(portrait_path, target_path, OUTPUT_DIR)
-    if composite_path is None:
-        print("ERROR: AI合成生成失败！")
-        print(f"  使用的prompt: {comp_prompt_used}")
+    print(f"[2/4] AI生成初步合成图(人像+表情包)...")
+    step1_path = generate_composite_step1(portrait_path, target_path, OUTPUT_DIR)
+    if step1_path is None:
+        print("ERROR: 初步合成失败！")
         return caricature_path, None
+    print(f"  已保存: {step1_path}")
+
+    print(f"[3/4] 创建眼部修复mask...")
+    mask_path = create_eye_mask(step1_path)
+    print(f"  Mask: {mask_path}")
+
+    print(f"[4/4] AI局部重绘修复眼睛区域...")
+    from src.ai_composite import fix_eyes
+    composite_path = fix_eyes(step1_path, portrait_path)
+    if composite_path is None:
+        print("WARNING: 眼部修复失败，使用初步合成结果")
+        composite_path = step1_path
     print(f"  已保存: {composite_path}")
 
     print(f"\n=== 完成 (AI模式) ===")
@@ -98,7 +105,7 @@ def run_hybrid(portrait_path, target_path, exaggeration=1.8):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    print(f"[1/4] 本地检测人像特征...")
+    print(f"[1/5] 本地检测人像特征...")
     detector = FaceLandmarkDetector()
     landmarks, image = detector.detect(portrait_path)
     if landmarks is None:
@@ -112,26 +119,32 @@ def run_hybrid(portrait_path, target_path, exaggeration=1.8):
     print(f"  鼻宽/面宽: {ratios['nose_width_ratio']:.2f}")
     detector.release()
 
-    print(f"[2/4] 本地生成漫画化人像...")
+    print(f"[2/5] 本地生成漫画化人像...")
     result_caricature, _, _ = create_caricature(portrait_path, exaggeration_factor=exaggeration)
     if result_caricature is None:
         print("ERROR: 漫画化失败！")
         return None, None
 
-    caricature_path = os.path.join(OUTPUT_DIR, f"caricature_{timestamp}.png")
+    caricature_path = os.path.join(OUTPUT_DIR, f"caricature_hybrid_{timestamp}.png")
     cv2.imwrite(caricature_path, result_caricature)
     print(f"  已保存: {caricature_path}")
 
-    print(f"[3/4] AI分析特征 + 生成融合prompt...")
-    from src.ai_composite import generate_composite_prompt
-    comp_prompt = generate_composite_prompt(portrait_path, target_path)
-    print(f"  融合prompt: {comp_prompt}")
-
-    print(f"[4/4] AI生成融合合成图片...")
-    composite_path, _ = generate_composite_with_wanx(portrait_path, target_path, OUTPUT_DIR)
-    if composite_path is None:
-        print("ERROR: AI合成生成失败！")
+    print(f"[3/5] AI生成初步合成图(人像结构+表情包纹理)...")
+    step1_path = generate_composite_step1(portrait_path, target_path, OUTPUT_DIR)
+    if step1_path is None:
+        print("ERROR: 初步合成失败！")
         return caricature_path, None
+    print(f"  已保存: {step1_path}")
+
+    print(f"[4/5] 创建眼部修复mask...")
+    mask_path = create_eye_mask(step1_path)
+    print(f"  Mask: {mask_path}")
+
+    print(f"[5/5] AI局部重绘修复眼睛(人像形状+表情包纹理)...")
+    composite_path = fix_eyes(step1_path, portrait_path)
+    if composite_path is None:
+        print("WARNING: 眼部修复失败，使用初步合成结果")
+        composite_path = step1_path
     print(f"  已保存: {composite_path}")
 
     print(f"\n=== 完成 (混合模式) ===")
